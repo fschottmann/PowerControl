@@ -1,0 +1,19 @@
+# runtime data of a PowerControl installation (recreated at start)
+Logs/
+logs/
+temp/
+Export/
+ini/settings.json
+ini/changes.json
+ini/history/
+
+# personal data files picked up from data\ (see $PowerControl.Data)
+data/
+
+# archives and editor leftovers
+*.7z
+*.zip
+*.bak
+*.tmp
+Thumbs.db
+.vs/

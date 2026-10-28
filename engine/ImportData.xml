@@ -1,0 +1,338 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Engine>
+  <!--
+    ImportData: the counterpart of ExportData.xml. Every entry is a Menu, so the imported rows land in the
+    output grid like any other menu result; from there the export actions, the filter and the column
+    profiles work as usual. Imported rows carry the type name 'PowerControl.Import', so actions can target
+    them with a DisplayCondition such as  $_.PSObject.TypeNames -contains 'PowerControl.Import'
+  -->
+  <PCtrl type="Menu" Label="Import" ID="ImportGroup-7c1d2e3f4a5b6c7d8e9f0a1b" Icon="lucide\import.svg" Children="ImportSql-7c1d2e3f4a5b6c7d8e9f0a21,ImportRest-7c1d2e3f4a5b6c7d8e9f0a20,ImportJson-7c1d2e3f4a5b6c7d8e9f0a1d,ImportCsv-7c1d2e3f4a5b6c7d8e9f0a1c,ImportClixml-7c1d2e3f4a5b6c7d8e9f0a1e,ImportClipboard-7c1d2e3f4a5b6c7d8e9f0a1f,ImportFolder-7c1d2e3f4a5b6c7d8e9f0a22" />
+  <PCtrl type="Menu" Label="Import CSV file" ID="ImportCsv-7c1d2e3f4a5b6c7d8e9f0a1c" Icon="lucide\file-spreadsheet.svg" ToolTip="Reads a CSV/TXT file with a header line into the grid">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }   # remembered across runs (settings.json)
+      $global:PowerControlImport = $PowerControl.Settings['ImportPaths']
+      $asText = { param($value) if ($value -is [string]) { $value } elseif ($null -ne $value -and $null -ne $value.Content) { [string]$value.Content } else { [string]$value } }
+
+      $GUItable = @{
+        'window' = @{
+          'title' = 'Import CSV'
+          'description' = 'The first line of the file provides the column names.'
+        }
+        'dialog' = @{
+          0 = @{ 'Label' = 'File'; 'OpenFile' = @{ 'Name' = 'Path'; 'Text' = [string]$global:PowerControlImport['CsvPath']; 'Filter' = 'CSV (*.csv;*.txt)|*.csv;*.txt|All files (*.*)|*.*' } }
+          1 = @{ 'Label' = 'Delimiter'; 'ComboBox' = @{ 'Name' = 'Delimiter'; 'IsEditable' = $true; 'Text' = $(if ($global:PowerControlImport['CsvDelimiter']) { $global:PowerControlImport['CsvDelimiter'] } else { ';' }); 'Elements' = @(';', ',', 'Tab', '|') } }
+          2 = @{ 'Label' = 'Encoding'; 'ComboBox' = @{ 'Name' = 'Encoding'; 'IsEditable' = $false; 'Text' = 'UTF8'; 'Elements' = @('UTF8', 'Latin1', 'Unicode') } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_Import'; 'Name' = 'Import'; 'isDefault' = $true } }
+        'OnResult' = {
+          $path = ([string]$GUIResults.Path).Trim('"', ' ')
+          $delimiter = & $asText $GUIResults.Delimiter
+          if ($delimiter -eq 'Tab') { $delimiter = "`t" }
+          if ([string]::IsNullOrEmpty($delimiter)) { $delimiter = ';' }
+          $encodingName = & $asText $GUIResults.Encoding
+          $encoding = switch ($encodingName) { 'Latin1' { [System.Text.Encoding]::Latin1 } 'Unicode' { [System.Text.Encoding]::Unicode } default { [System.Text.Encoding]::UTF8 } }
+
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+          $global:PowerControlImport['CsvPath'] = $path
+          $global:PowerControlImport['CsvDelimiter'] = $(if ($delimiter -eq "`t") { 'Tab' } else { $delimiter })
+
+          $rows = @(Import-Csv -LiteralPath $path -Delimiter $delimiter[0] -Encoding $encoding)
+          foreach ($row in $rows) {
+            $row.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $Script:PowerControlItem_Output += $row
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="Import JSON file" ID="ImportJson-7c1d2e3f4a5b6c7d8e9f0a1d" Icon="lucide\file-json.svg" ToolTip="Reads a JSON array (or an object with exactly one array) into the grid">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }   # remembered across runs (settings.json)
+      $global:PowerControlImport = $PowerControl.Settings['ImportPaths']
+
+      $GUItable = @{
+        'window' = @{
+          'title' = 'Import JSON'
+          'description' = 'Expects an array of objects. Nested values are shown as JSON text.'
+        }
+        'dialog' = @{
+          0 = @{ 'Label' = 'File'; 'OpenFile' = @{ 'Name' = 'Path'; 'Text' = [string]$global:PowerControlImport['JsonPath']; 'Filter' = 'JSON (*.json)|*.json|All files (*.*)|*.*' } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_Import'; 'Name' = 'Import'; 'isDefault' = $true } }
+        'OnResult' = {
+          $path = ([string]$GUIResults.Path).Trim('"', ' ')
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+          $global:PowerControlImport['JsonPath'] = $path
+          Save-PowerControlSettings
+
+          $data = Get-Content -LiteralPath $path -Raw -Encoding utf8 | ConvertFrom-Json
+          # an object that wraps exactly one array (e.g. { "items": [...] }) is unwrapped
+          if ($data -isnot [array]) {
+            $arrays = @($data.PSObject.Properties | Where-Object { $_.Value -is [array] })
+            if ($arrays.Count -eq 1) { $data = $arrays[0].Value } else { $data = @($data) }
+          }
+
+          foreach ($entry in @($data)) {
+            $row = [ordered]@{}
+            foreach ($property in $entry.PSObject.Properties) {
+              $row[$property.Name] = if ($property.Value -is [pscustomobject] -or $property.Value -is [array]) { ConvertTo-Json -InputObject $property.Value -Compress -Depth 5 } else { $property.Value }
+            }
+            $object = [pscustomobject]$row
+            $object.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $Script:PowerControlItem_Output += $object
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="Import CliXML file" ID="ImportClixml-7c1d2e3f4a5b6c7d8e9f0a1e" Icon="lucide\file-input.svg" ToolTip="Reads a file written by Export-Clixml (or ...to CliXML)">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }   # remembered across runs (settings.json)
+      $global:PowerControlImport = $PowerControl.Settings['ImportPaths']
+
+      $GUItable = @{
+        'window' = @{
+          'title' = 'Import CliXML'
+          'description' = 'Counterpart of "...to CliXML" in the export menu.'
+        }
+        'dialog' = @{
+          0 = @{ 'Label' = 'File'; 'OpenFile' = @{ 'Name' = 'Path'; 'Text' = $(if ($global:PowerControlImport['ClixmlPath']) { [string]$global:PowerControlImport['ClixmlPath'] } else { [string](Join-Path $PowerControl.General.ExportPath 'Report.clixml') }); 'Filter' = 'CliXML (*.clixml;*.xml)|*.clixml;*.xml|All files (*.*)|*.*' } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_Import'; 'Name' = 'Import'; 'isDefault' = $true } }
+        'OnResult' = {
+          $path = ([string]$GUIResults.Path).Trim('"', ' ')
+          if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "File not found: $path" }
+          $global:PowerControlImport['ClixmlPath'] = $path
+          Save-PowerControlSettings
+
+          foreach ($entry in @(Import-Clixml -LiteralPath $path)) {
+            if ($null -eq $entry) { continue }
+            $entry.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $Script:PowerControlItem_Output += $entry
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="Import clipboard" ID="ImportClipboard-7c1d2e3f4a5b6c7d8e9f0a1f" Icon="lucide\clipboard.svg" ApartmentState="STA" ToolTip="Table from the clipboard: Markdown pipe table, tab separated (Excel), CSV or JSON; the format is detected automatically">
+    <Script><![CDATA[
+      $text = [string](Get-Clipboard -Raw)
+      if ([string]::IsNullOrWhiteSpace($text)) { throw 'The clipboard contains no text.' }
+      $trimmed = $text.Trim()
+
+      $rows = @()
+      if ($trimmed.StartsWith('[') -or $trimmed.StartsWith('{')) {
+        $rows = @(ConvertFrom-Json -InputObject $trimmed)
+      }
+      elseif (@($trimmed -split "`r?`n" | Where-Object { $_.Trim().StartsWith('|') }).Count -ge 2) {
+        # Markdown pipe tables: a block of consecutive lines starting with "|"; the separator row (---, :---:) is
+        # skipped; several tables get the union of their headers plus a "Table" column
+        $tables = [System.Collections.Generic.List[object]]::new()
+        $current = $null
+        foreach ($line in @($trimmed -split "`r?`n")) {
+          $lineText = $line.Trim()
+          if (-not $lineText.StartsWith('|')) { $current = $null; continue }
+          $cells = @(($lineText.Trim('|') -split '(?<!\\)\|') | ForEach-Object { $_.Trim().Replace('\|', '|') })
+          if ($null -eq $current) { $current = @{ Header = $cells; Rows = [System.Collections.Generic.List[object]]::new() }; $tables.Add($current); continue }
+          if (@($cells | Where-Object { $_ -ne '' -and $_ -notmatch '^:?-{2,}:?$' }).Count -eq 0) { continue }
+          $current.Rows.Add($cells)
+        }
+        $allNames = [System.Collections.Generic.List[string]]::new()
+        $headerNames = @{}
+        $tableIndex = 0
+        foreach ($table in $tables) {
+          $tableIndex++
+          $width = [Math]::Max($table.Header.Count, (@($table.Rows | ForEach-Object { $_.Count }) + 0 | Measure-Object -Maximum).Maximum)
+          $names = @(for ($i = 0; $i -lt $width; $i++) { if ($i -lt $table.Header.Count -and $table.Header[$i]) { $table.Header[$i] } else { "Column $($i + 1)" } })
+          $headerNames[$tableIndex] = $names
+          foreach ($name in $names) { if (-not $allNames.Contains($name)) { $allNames.Add($name) } }
+        }
+        $tableIndex = 0
+        foreach ($table in $tables) {
+          $tableIndex++
+          $names = $headerNames[$tableIndex]
+          foreach ($cells in $table.Rows) {
+            $row = [ordered]@{}
+            if ($tables.Count -gt 1) { $row['Table'] = $tableIndex }
+            foreach ($name in $allNames) { $row[$name] = '' }
+            for ($i = 0; $i -lt $names.Count; $i++) { $row[$names[$i]] = if ($i -lt $cells.Count) { $cells[$i] } else { '' } }
+            $rows += [pscustomobject]$row
+          }
+        }
+      }
+      else {
+        $lines = @($trimmed -split "`r?`n" | Where-Object { $_.Trim() })
+        $firstLine = $lines[0]
+        # delimiter: tab (Excel), otherwise whichever of ; , | occurs most often in the header line
+        $delimiter = "`t"
+        if (-not $firstLine.Contains("`t")) {
+          $counts = @{}; foreach ($candidate in ';', ',', '|') { $counts[$candidate] = @($firstLine.ToCharArray() | Where-Object { "$_" -eq $candidate }).Count }
+          $delimiter = ($counts.GetEnumerator() | Sort-Object Value -Descending | Select-Object -First 1).Key
+          if ($counts[$delimiter] -eq 0) { $delimiter = ';' }
+        }
+        $rows = @($lines | ConvertFrom-Csv -Delimiter $delimiter[0])
+      }
+
+      foreach ($row in $rows) {
+        if ($null -eq $row) { continue }
+        $row.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+        $Script:PowerControlItem_Output += $row
+      }
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="REST query (JSON)" ID="ImportRest-7c1d2e3f4a5b6c7d8e9f0a20" Icon="lucide\globe.svg" ToolTip="Calls a URL and shows the JSON result as a table (array, or an object with one array)">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }
+      $remembered = $PowerControl.Settings['ImportPaths']
+      $asText = { param($value) if ($value -is [string]) { $value } elseif ($null -ne $value -and $null -ne $value.Content) { [string]$value.Content } else { [string]$value } }
+
+      $GUItable = @{
+        'window' = @{
+          'title' = 'REST query'
+          'description' = 'Headers as "Name: value; Name2: value2". For an object the (only) array inside is shown, otherwise its properties as one row.'
+        }
+        'dialog' = @{
+          0 = @{ 'Label' = 'URL'; 'TextBox' = @{ 'Name' = 'Url'; 'Text' = $(if ($remembered['RestUrl']) { [string]$remembered['RestUrl'] } else { 'https://api.github.com/repos/PowerShell/PowerShell/releases' }); 'Focus' = $true } }
+          1 = @{ 'Label' = 'Method'; 'ComboBox' = @{ 'Name' = 'Method'; 'IsEditable' = $false; 'Text' = 'GET'; 'Elements' = @('GET', 'POST', 'PUT', 'DELETE') } }
+          2 = @{ 'Label' = 'Headers'; 'TextBox' = @{ 'Name' = 'Headers'; 'Text' = [string]$remembered['RestHeaders'] } }
+          3 = @{ 'Label' = 'Body (JSON)'; 'TextBox' = @{ 'Name' = 'Body'; 'Text' = '' } }
+          4 = @{ 'Label' = 'Array property (optional)'; 'TextBox' = @{ 'Name' = 'ArrayProperty'; 'Text' = '' } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_Query'; 'Name' = 'Query'; 'isDefault' = $true } }
+        'OnResult' = {
+          $url = ([string]$GUIResults.Url).Trim()
+          if (-not $url) { throw 'No URL given.' }
+          $method = & $asText $GUIResults.Method
+          $headers = @{}
+          foreach ($pair in ([string]$GUIResults.Headers) -split ';') { if ($pair -match '^\s*([^:]+):\s*(.+?)\s*$') { $headers[$Matches[1].Trim()] = $Matches[2] } }
+          $remembered['RestUrl'] = $url; $remembered['RestHeaders'] = [string]$GUIResults.Headers
+          Save-PowerControlSettings
+
+          $parameters = @{ Uri = $url; Method = $method; TimeoutSec = 60 }
+          if ($headers.Count -gt 0) { $parameters.Headers = $headers }
+          if (([string]$GUIResults.Body).Trim()) { $parameters.Body = [string]$GUIResults.Body; $parameters.ContentType = 'application/json' }
+          $data = Invoke-RestMethod @parameters
+
+          $arrayProperty = ([string]$GUIResults.ArrayProperty).Trim()
+          if ($arrayProperty -and $null -ne $data.$arrayProperty) { $data = $data.$arrayProperty }
+          elseif ($data -isnot [array]) {
+            $arrays = @($data.PSObject.Properties | Where-Object { $_.Value -is [array] })
+            if ($arrays.Count -eq 1) { $data = $arrays[0].Value } else { $data = @($data) }
+          }
+          foreach ($entry in @($data)) {
+            $row = [ordered]@{}
+            foreach ($property in $entry.PSObject.Properties) {
+              $row[$property.Name] = if ($property.Value -is [pscustomobject] -or $property.Value -is [array]) { ConvertTo-Json -InputObject $property.Value -Compress -Depth 5 } else { $property.Value }
+            }
+            $object = [pscustomobject]$row
+            $object.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $Script:PowerControlItem_Output += $object
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="SQL query" ID="ImportSql-7c1d2e3f4a5b6c7d8e9f0a21" Icon="lucide\database.svg" ToolTip="Runs a SELECT query via System.Data.SqlClient (SQL Server; the connection string is remembered)">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }
+      $remembered = $PowerControl.Settings['ImportPaths']
+
+      $GUItable = @{
+        'window' = @{
+          'title' = 'SQL query'
+          'description' = 'Example: Server=srv-sql;Database=master;Integrated Security=True;TrustServerCertificate=True'
+        }
+        'dialog' = @{
+          0 = @{ 'Label' = 'Connection'; 'TextBox' = @{ 'Name' = 'Connection'; 'Text' = $(if ($remembered['SqlConnection']) { [string]$remembered['SqlConnection'] } else { 'Server=localhost;Database=master;Integrated Security=True;TrustServerCertificate=True' }); 'Focus' = $true } }
+          1 = @{ 'Label' = 'Query'; 'TextBox' = @{ 'Name' = 'Query'; 'Text' = $(if ($remembered['SqlQuery']) { [string]$remembered['SqlQuery'] } else { 'SELECT TOP 100 name, create_date, state_desc FROM sys.databases' }); 'MultiLine' = $true } }
+          2 = @{ 'Label' = 'Timeout (s)'; 'TextBox' = @{ 'Name' = 'Timeout'; 'Text' = '60'; 'check' = { $sender.Text -match '^\d+$' } } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_Run'; 'Name' = 'Run'; 'isDefault' = $true } }
+        'OnResult' = {
+          $connectionString = ([string]$GUIResults.Connection).Trim()
+          $query = ([string]$GUIResults.Query).Trim()
+          if (-not $connectionString -or -not $query) { throw 'Connection and query are required.' }
+          $remembered['SqlConnection'] = $connectionString; $remembered['SqlQuery'] = $query
+          Save-PowerControlSettings
+
+          $connection = [System.Data.SqlClient.SqlConnection]::new($connectionString)
+          try {
+            $connection.Open()
+            $command = $connection.CreateCommand()
+            $command.CommandText = $query
+            $command.CommandTimeout = [int]$GUIResults.Timeout
+            $table = [System.Data.DataTable]::new()
+            $adapter = [System.Data.SqlClient.SqlDataAdapter]::new($command)
+            [void]$adapter.Fill($table)
+          }
+          finally { $connection.Dispose() }
+
+          foreach ($dataRow in $table.Rows) {
+            $row = [ordered]@{}
+            foreach ($column in $table.Columns) { $row[$column.ColumnName] = if ($dataRow[$column] -is [System.DBNull]) { $null } else { $dataRow[$column] } }
+            $object = [pscustomobject]$row
+            $object.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $Script:PowerControlItem_Output += $object
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Menu" Label="Folder contents" ID="ImportFolder-7c1d2e3f4a5b6c7d8e9f0a22" Icon="lucide\folder.svg" ToolTip="Lists the files and folders of a directory (optionally recursive, with a filter)">
+    <PrevAction ID="DrawGUI-e7670e8344194a828558f726" Priority="100" />
+    <Script><![CDATA[
+      if ($null -eq $PowerControl.Settings['ImportPaths']) { $PowerControl.Settings['ImportPaths'] = @{} }
+      $remembered = $PowerControl.Settings['ImportPaths']
+
+      $GUItable = @{
+        'window' = @{ 'title' = 'Folder contents'; 'description' = 'Files and sub folders as a table. Filters such as *.log or *.ps1.' }
+        'dialog' = @{
+          0 = @{ 'Label' = 'Folder'; 'TextBox' = @{ 'Name' = 'Path'; 'Text' = $(if ($remembered['FolderPath']) { [string]$remembered['FolderPath'] } else { $PowerControl.General.CurrentPath }); 'Focus' = $true } }
+          1 = @{ 'Label' = 'Filter'; 'TextBox' = @{ 'Name' = 'Filter'; 'Text' = '*' } }
+          2 = @{ 'CheckBox' = @{ 'Name' = 'Recurse'; 'Text' = 'Include sub folders'; 'IsChecked' = $false } }
+        }
+        'actionButtons' = @{ 0 = @{ 'Label' = '_List'; 'Name' = 'List'; 'isDefault' = $true } }
+        'OnResult' = {
+          $path = ([string]$GUIResults.Path).Trim('"', ' ')
+          if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Folder not found: $path" }
+          $remembered['FolderPath'] = $path
+          Save-PowerControlSettings
+          $filter = [string]$GUIResults.Filter; if (-not $filter) { $filter = '*' }
+          $items = Get-ChildItem -LiteralPath $path -Filter $filter -Recurse:([bool]$GUIResults.Recurse) -Force -ErrorAction SilentlyContinue | Select-Object -First 5000
+          foreach ($item in $items) {
+            $row = [PSCustomObject]@{
+              Name       = $item.Name
+              Type       = $(if ($item.PSIsContainer) { 'Folder' } else { $item.Extension })
+              Size_KB    = $(if ($item.PSIsContainer) { $null } else { [math]::Round($item.Length / 1KB, 1) })
+              Modified   = $item.LastWriteTime
+              Attributes = [string]$item.Attributes
+              FullName   = $item.FullName
+            }
+            $row.PSObject.TypeNames.Insert(0, 'PowerControl.Import')
+            $row.PSObject.TypeNames.Insert(0, 'PowerControl.FileSystem')
+            $Script:PowerControlItem_Output += $row
+          }
+        }
+      }
+      Show-PCtrlGUI -GUItable $GUItable
+    ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="Open (Explorer)" ID="OpenInExplorer-7c1d2e3f4a5b6c7d8e9f0a23" Icon="lucide\folder-open.svg" ToolTip="Opens the selected file or folder with its default program">
+    <DisplayCondition SortOrder="10"><![CDATA[
+          $_.PSObject.TypeNames -contains 'PowerControl.FileSystem'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      foreach ($row in @($script:SelectedEntries)) { if ($row.FullName -and (Test-Path -LiteralPath $row.FullName)) { Invoke-Item -LiteralPath $row.FullName } }
+    ]]></Script>
+  </PCtrl>
+</Engine>

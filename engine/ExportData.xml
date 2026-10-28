@@ -1,0 +1,154 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Engine>
+  <PCtrl type="Action" Label="Copy to Clipboard" ID="CopyToClipboard-FqkYZAE7hOhM4z6I" Icon="lucide\copy.svg">
+    <Script><![CDATA[
+      # Copies the selected rows (or every row when nothing is selected) of the output grid
+      # as tab separated text: visible columns only, in display order.
+      $data = Get-PowerControlGridData -SelectedOnly
+      if ($data.Rows.Count -eq 0) { $data = Get-PowerControlGridData }
+
+      if ($data.Rows.Count -gt 0) {
+          $rows = if ($data.Columns.Count -gt 0) { $data.Rows | Select-Object -Property $data.Columns } else { $data.Rows }
+          $text = @($rows | ConvertTo-Csv -Delimiter "`t" -UseQuotes AsNeeded) -join "`r`n"
+          Set-Clipboard -Value $text
+      }
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to HTML" ID="ToHTML-Feb28hjVEGpd43zH9XTddXkNJ" Icon="lucide\file-code.svg">
+    <DisplayCondition Categorie="Export Results..." SortOrder="1000"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      if (-not (Test-Path $PowerControl.General.ExportPath)) { New-Item -Path $PowerControl.General.ExportPath -ItemType Directory | Out-Null }
+
+      $data = Get-PowerControlGridData
+      $rows = if ($data.Columns.Count -gt 0) { $data.Rows | Select-Object -Property $data.Columns } else { $data.Rows }
+      $reportPath = Join-Path $PowerControl.General.ExportPath 'Report.html'
+
+      # a click on a column header sorts the table (numbers numerically, text alphabetically), a second click reverses
+      $head = '<style>body{font-family:Segoe UI,Arial,sans-serif;font-size:12px;margin:16px}table{border-collapse:collapse}th,td{border:1px solid #ccc;padding:3px 8px;text-align:left;vertical-align:top}th{background:#eee;cursor:pointer;user-select:none}th.asc::after{content:" \25B2"}th.desc::after{content:" \25BC"}tr:nth-child(even){background:#f8f8f8}#filter{margin:8px 0;padding:4px 8px;width:320px}</style>'
+      $script = @'
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var table = document.querySelector("table"); if (!table) { return; }
+  var input = document.createElement("input"); input.id = "filter"; input.placeholder = "Filter..."; table.parentNode.insertBefore(input, table);
+  input.addEventListener("input", function () {
+    var needle = input.value.toLowerCase();
+    Array.prototype.slice.call(table.rows, 1).forEach(function (row) { row.style.display = row.textContent.toLowerCase().indexOf(needle) >= 0 ? "" : "none"; });
+  });
+  Array.prototype.forEach.call(table.rows[0].cells, function (th, index) {
+    th.addEventListener("click", function () {
+      var asc = !th.classList.contains("asc");
+      Array.prototype.forEach.call(table.rows[0].cells, function (c) { c.classList.remove("asc", "desc"); });
+      th.classList.add(asc ? "asc" : "desc");
+      var rows = Array.prototype.slice.call(table.rows, 1);
+      rows.sort(function (a, b) {
+        var x = a.cells[index].textContent.trim(), y = b.cells[index].textContent.trim();
+        var nx = parseFloat(x.replace(",", ".")), ny = parseFloat(y.replace(",", "."));
+        var cmp = (!isNaN(nx) && !isNaN(ny)) ? nx - ny : x.localeCompare(y, undefined, { numeric: true, sensitivity: "base" });
+        return asc ? cmp : -cmp;
+      });
+      rows.forEach(function (row) { table.tBodies[0].appendChild(row); });
+    });
+  });
+});
+</script>
+'@
+      $rows | ConvertTo-Html -Title 'PowerControl Report' -Head $head -PreContent "<h2>PowerControl Report</h2><p>$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') - $($data.Rows.Count) rows - click a column header to sort</p>" -PostContent $script |
+          Out-File -FilePath $reportPath -Encoding utf8
+
+      Invoke-Item -Path $reportPath
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to TXT" ID="ToTXT-8uhhE1ArPJiMbS2ya1OzPbJOM4" Icon="lucide\file-text.svg">
+    <KeyBinding Key="T" Modifiers="Ctrl+Shift" />
+    <DisplayCondition Categorie="Export Results..." SortOrder="2000"><![CDATA[
+          ($_.PSObject.TypeNames -contains 'System.Object') -and ($_.Attributes -ne 'Directory')
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      if (-not (Test-Path $PowerControl.General.ExportPath)) { New-Item -Path $PowerControl.General.ExportPath -ItemType Directory | Out-Null }
+
+      $data = Get-PowerControlGridData
+      $rows = if ($data.Columns.Count -gt 0) { $data.Rows | Select-Object -Property $data.Columns } else { $data.Rows }
+      $reportPath = Join-Path $PowerControl.General.ExportPath 'Report.txt'
+
+      $rows | Format-Table -Property * -AutoSize -Wrap | Out-File -FilePath $reportPath -Width 4096 -Encoding utf8
+
+      $editor = 'C:\Program Files\Notepad++\notepad++.exe'
+      if (-not (Test-Path $editor)) { $editor = 'notepad.exe' }
+      Start-Process -FilePath $editor -ArgumentList "`"$reportPath`""
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to CSV" ID="ToCSV-6arYCKnWmxH1TGoHv7rRG5TJLR" Icon="lucide\file-spreadsheet.svg">
+    <DisplayCondition Categorie="Export Results..." SortOrder="3000"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      if (-not (Test-Path $PowerControl.General.ExportPath)) { New-Item -Path $PowerControl.General.ExportPath -ItemType Directory | Out-Null }
+
+      $data = Get-PowerControlGridData
+      $rows = if ($data.Columns.Count -gt 0) { $data.Rows | Select-Object -Property $data.Columns } else { $data.Rows }
+      $reportPath = Join-Path $PowerControl.General.ExportPath 'Report.csv'
+
+      $rows | ConvertTo-Csv -Delimiter ';' -UseQuotes AsNeeded | Out-File -FilePath $reportPath -Encoding utf8
+
+      $editor = 'C:\Program Files\Notepad++\notepad++.exe'
+      if (-not (Test-Path $editor)) { $editor = 'notepad.exe' }
+      Start-Process -FilePath $editor -ArgumentList "`"$reportPath`""
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to CliXML" ID="ToClixml-a9a26cdaf5ca4e26876b52f" Icon="lucide\file-json.svg">
+    <DisplayCondition Categorie="Export Results..." SortOrder="4000"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      if (-not (Test-Path $PowerControl.General.ExportPath)) { New-Item -Path $PowerControl.General.ExportPath -ItemType Directory | Out-Null }
+
+      # the former version serialised the DataGrid control itself; export the rows instead
+      $data = Get-PowerControlGridData
+      $reportPath = Join-Path $PowerControl.General.ExportPath 'Report.clixml'
+      $data.Rows | Export-Clixml -Path $reportPath -Depth 4
+
+      $Script:PowerControlItem_Output += [PSCustomObject]@{ Exported = $data.Rows.Count; File = $reportPath }
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to Clipboard" ID="ToClipboard-1262d9a1acc24fa9b31f" Icon="lucide\clipboard-copy.svg" DisplayBy="System.Object">
+    <KeyBinding Key="C" Modifiers="Ctrl+Shift" />
+    <DisplayCondition Categorie="Export Results..." SortOrder="5000"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object' 
+        ]]></DisplayCondition>
+    <NextAction ID="CopyToClipboard-FqkYZAE7hOhM4z6I" Priority="100" />
+  </PCtrl>
+  <PCtrl type="Action" Label="...to Markdown (Clipboard)" ID="ToMarkdown-2b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e" Icon="lucide\table.svg" ToolTip="Copies the selected rows (or all rows) as a Markdown table, ready for wikis, tickets and chats">
+    <DisplayCondition Categorie="Export Results..." SortOrder="6000"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      $data = Get-PowerControlGridData -SelectedOnly
+      if ($data.Rows.Count -eq 0) { $data = Get-PowerControlGridData }
+      if ($data.Rows.Count -eq 0) { throw 'No rows available.' }
+      $columns = if ($data.Columns.Count -gt 0) { @($data.Columns) } else { @($data.Rows[0].PSObject.Properties.Name) }
+      $escape = { param($value) ([string]$value) -replace '\|', '\|' -replace "`r?`n", ' ' }
+      $lines = [System.Collections.Generic.List[string]]::new()
+      $lines.Add('| ' + (($columns | ForEach-Object { & $escape $_ }) -join ' | ') + ' |')
+      $lines.Add('| ' + (($columns | ForEach-Object { '---' }) -join ' | ') + ' |')
+      foreach ($row in $data.Rows) { $lines.Add('| ' + (($columns | ForEach-Object { & $escape $row.$_ }) -join ' | ') + ' |') }
+      Set-Clipboard -Value ($lines -join "`r`n")
+      ]]></Script>
+  </PCtrl>
+  <PCtrl type="Action" Label="...to JSON" ID="ToJSON-3c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f" Icon="lucide\file-json.svg" ToolTip="Writes the visible columns of all rows as a JSON array (counterpart of the JSON import)">
+    <DisplayCondition Categorie="Export Results..." SortOrder="4500"><![CDATA[
+          $_.PSObject.TypeNames -contains 'System.Object'
+        ]]></DisplayCondition>
+    <Script><![CDATA[
+      if (-not (Test-Path $PowerControl.General.ExportPath)) { New-Item -Path $PowerControl.General.ExportPath -ItemType Directory | Out-Null }
+      $data = Get-PowerControlGridData
+      $rows = if ($data.Columns.Count -gt 0) { $data.Rows | Select-Object -Property $data.Columns } else { $data.Rows }
+      $reportPath = Join-Path $PowerControl.General.ExportPath 'Report.json'
+      ConvertTo-Json -InputObject @($rows) -Depth 5 | Out-File -FilePath $reportPath -Encoding utf8
+      $editor = 'C:\Program Files\Notepad++\notepad++.exe'
+      if (-not (Test-Path $editor)) { $editor = 'notepad.exe' }
+      Start-Process -FilePath $editor -ArgumentList "`"$reportPath`""
+      ]]></Script>
+  </PCtrl>
+</Engine>
